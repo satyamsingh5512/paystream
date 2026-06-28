@@ -1,0 +1,419 @@
+# ============================================================================
+# PayStream — local development stack (Phase 1: Infrastructure Foundation)
+#
+# Contents:
+#   Messaging .... Zookeeper + Kafka
+#   Cache ........ Redis
+#   Databases .... 5 isolated Postgres instances (one per stateful service)
+#                  NOTE: notification-service is stateless (Redis only) per design.md,
+#                  so there are 5 DBs, not 6. Application service containers
+#                  (auth/account/transaction/fraud/notification/ledger) are added
+#                  in their respective build phases.
+#   Observability  Prometheus + Grafana + Loki
+#   Mail ......... MailHog (notification email fallback, used from Phase 6)
+#   Platform ..... eureka-server, config-server, api-gateway
+#
+# All tunables come from .env (copy .env.example -> .env).
+# ============================================================================
+
+name: paystream
+
+x-postgres-healthcheck: &postgres-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
+
+services:
+  # --------------------------------------------------------------------------
+  # Messaging
+  # --------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: paystream-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [paystream-net]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: paystream-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "${KAFKA_HOST_PORT:-29092}:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Cache
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: paystream-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Databases (one isolated instance per stateful service)
+  # --------------------------------------------------------------------------
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: paystream-postgres-auth
+    environment:
+      POSTGRES_USER: ${DB_USER:-paystream}
+      POSTGRES_PASSWORD: ${DB_PASS:-paystream}
+      POSTGRES_DB: ${DB_NAME_AUTH:-auth_db}
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    healthcheck: *postgres-healthcheck
+    networks: [paystream-net]
+
+  postgres-account:
+    image: postgres:16-alpine
+    container_name: paystream-postgres-account
+    environment:
+      POSTGRES_USER: ${DB_USER:-paystream}
+      POSTGRES_PASSWORD: ${DB_PASS:-paystream}
+      POSTGRES_DB: ${DB_NAME_ACCOUNT:-account_db}
+    volumes:
+      - postgres-account-data:/var/lib/postgresql/data
+    healthcheck: *postgres-healthcheck
+    networks: [paystream-net]
+
+  postgres-transaction:
+    image: postgres:16-alpine
+    container_name: paystream-postgres-transaction
+    environment:
+      POSTGRES_USER: ${DB_USER:-paystream}
+      POSTGRES_PASSWORD: ${DB_PASS:-paystream}
+      POSTGRES_DB: ${DB_NAME_TRANSACTION:-transaction_db}
+    volumes:
+      - postgres-transaction-data:/var/lib/postgresql/data
+    healthcheck: *postgres-healthcheck
+    networks: [paystream-net]
+
+  postgres-fraud:
+    image: postgres:16-alpine
+    container_name: paystream-postgres-fraud
+    environment:
+      POSTGRES_USER: ${DB_USER:-paystream}
+      POSTGRES_PASSWORD: ${DB_PASS:-paystream}
+      POSTGRES_DB: ${DB_NAME_FRAUD:-fraud_db}
+    volumes:
+      - postgres-fraud-data:/var/lib/postgresql/data
+    healthcheck: *postgres-healthcheck
+    networks: [paystream-net]
+
+  postgres-ledger:
+    image: postgres:16-alpine
+    container_name: paystream-postgres-ledger
+    environment:
+      POSTGRES_USER: ${DB_USER:-paystream}
+      POSTGRES_PASSWORD: ${DB_PASS:-paystream}
+      POSTGRES_DB: ${DB_NAME_LEDGER:-ledger_db}
+    volumes:
+      - postgres-ledger-data:/var/lib/postgresql/data
+    healthcheck: *postgres-healthcheck
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Mail (fallback channel for notification-service, used from Phase 6)
+  # --------------------------------------------------------------------------
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: paystream-mailhog
+    ports:
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Observability
+  # --------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: paystream-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks: [paystream-net]
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: paystream-loki
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks: [paystream-net]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: paystream-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Platform services
+  # --------------------------------------------------------------------------
+  eureka-server:
+    build:
+      context: .
+      dockerfile: eureka-server/Dockerfile
+    image: paystream/eureka-server:${TAG:-latest}
+    container_name: paystream-eureka
+    ports:
+      - "${EUREKA_PORT:-8761}:8761"
+    networks: [paystream-net]
+
+  config-server:
+    build:
+      context: .
+      dockerfile: config-server/Dockerfile
+    image: paystream/config-server:${TAG:-latest}
+    container_name: paystream-config-server
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+    environment:
+      EUREKA_HOST: eureka-server
+      EUREKA_PORT: 8761
+    ports:
+      - "${CONFIG_SERVER_PORT:-8888}:8888"
+    networks: [paystream-net]
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    image: paystream/api-gateway:${TAG:-latest}
+    container_name: paystream-api-gateway
+    depends_on:
+      config-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    environment:
+      EUREKA_HOST: eureka-server
+      EUREKA_PORT: 8761
+      CONFIG_SERVER_URI: http://config-server:8888
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    ports:
+      - "${API_GATEWAY_PORT:-8080}:8080"
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Application services (Phases 2-7)
+  # --------------------------------------------------------------------------
+  auth-service:
+    build: { context: ., dockerfile: auth-service/Dockerfile }
+    image: paystream/auth-service:${TAG:-latest}
+    container_name: paystream-auth-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      postgres-auth: { condition: service_healthy }
+    environment: &service-env
+      EUREKA_HOST: eureka-server
+      EUREKA_PORT: 8761
+      CONFIG_SERVER_URI: http://config-server:8888
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DB_USER: ${DB_USER:-paystream}
+      DB_PASS: ${DB_PASS:-paystream}
+    ports:
+      - "8081:8081"
+    networks: [paystream-net]
+
+  account-service:
+    build: { context: ., dockerfile: account-service/Dockerfile }
+    image: paystream/account-service:${TAG:-latest}
+    container_name: paystream-account-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      postgres-account: { condition: service_healthy }
+    environment:
+      <<: *service-env
+      DB_HOST_ACCOUNT: postgres-account
+    ports:
+      - "8082:8082"
+    networks: [paystream-net]
+
+  transaction-service:
+    build: { context: ., dockerfile: transaction-service/Dockerfile }
+    image: paystream/transaction-service:${TAG:-latest}
+    container_name: paystream-transaction-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      postgres-transaction: { condition: service_healthy }
+    environment:
+      <<: *service-env
+      DB_HOST_TRANSACTION: postgres-transaction
+    ports:
+      - "8083:8083"
+    networks: [paystream-net]
+
+  fraud-service:
+    build: { context: ., dockerfile: fraud-service/Dockerfile }
+    image: paystream/fraud-service:${TAG:-latest}
+    container_name: paystream-fraud-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      postgres-fraud: { condition: service_healthy }
+    environment:
+      <<: *service-env
+      DB_HOST_FRAUD: postgres-fraud
+    ports:
+      - "8084:8084"
+    networks: [paystream-net]
+
+  notification-service:
+    build: { context: ., dockerfile: notification-service/Dockerfile }
+    image: paystream/notification-service:${TAG:-latest}
+    container_name: paystream-notification-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mailhog: { condition: service_started }
+    environment:
+      <<: *service-env
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+    ports:
+      - "8085:8085"
+    networks: [paystream-net]
+
+  ledger-service:
+    build: { context: ., dockerfile: ledger-service/Dockerfile }
+    image: paystream/ledger-service:${TAG:-latest}
+    container_name: paystream-ledger-service
+    depends_on:
+      config-server: { condition: service_healthy }
+      eureka-server: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      postgres-ledger: { condition: service_healthy }
+    environment:
+      <<: *service-env
+      DB_HOST_LEDGER: postgres-ledger
+    ports:
+      - "8086:8086"
+    networks: [paystream-net]
+
+  # --------------------------------------------------------------------------
+  # Frontend (Phase 8) — static SPA served by nginx, proxies /api and /ws
+  # --------------------------------------------------------------------------
+  frontend:
+    build: { context: ., dockerfile: frontend/Dockerfile }
+    image: paystream/frontend:${TAG:-latest}
+    container_name: paystream-frontend
+    depends_on:
+      api-gateway: { condition: service_started }
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    networks: [paystream-net]
+
+networks:
+  paystream-net:
+    driver: bridge
+
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  redis-data:
+  postgres-auth-data:
+  postgres-account-data:
+  postgres-transaction-data:
+  postgres-fraud-data:
+  postgres-ledger-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:
