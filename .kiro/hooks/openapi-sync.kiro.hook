@@ -1,0 +1,13 @@
+{
+  "name": "OpenAPI Spec Sync",
+  "description": "When a REST controller is saved, verify OpenAPI annotations are complete.",
+  "version": "1",
+  "when": {
+    "type": "fileSave",
+    "patterns": ["**/*Controller.java"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A REST controller was just modified. Check if the OpenAPI annotations (@Operation, @ApiResponse, @Parameter) are complete and accurate for all endpoints in the file. If any are missing or outdated, add them. After updating, remind the developer to export the updated OpenAPI YAML to `docs/api-contracts/<service-name>-api.yaml`."
+  }
+}
