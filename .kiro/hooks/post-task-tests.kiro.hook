@@ -1,0 +1,12 @@
+{
+  "name": "Post-Task Test Runner",
+  "description": "After each spec task completes, automatically run the relevant test suite.",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A spec task just completed. Based on the task description, identify what was implemented. Run the most relevant test command: if it's a Java service task, run `mvn test -pl <module> -q`; if it's a frontend task, run `cd frontend && npm run test -- --run`. Parse the output and confirm whether the implementation passes all tests. If tests fail, analyze the failure and suggest a fix without modifying the task status."
+  }
+}
