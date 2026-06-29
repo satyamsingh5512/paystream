@@ -1,0 +1,16 @@
+{
+  "name": "Run Tests on Java Save",
+  "description": "After any Java file is saved, compile the owning service module and run its unit tests.",
+  "version": "1",
+  "when": {
+    "type": "fileSave",
+    "patterns": [
+      "**/src/main/java/**/*.java",
+      "**/src/test/java/**/*.java"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A Java file was just saved. Identify which Maven module it belongs to. Run `mvn test -pl <module> -am -q` in the project root. If there are test failures, read the Surefire reports from `target/surefire-reports/` and present a concise summary of which tests failed and why. If all tests pass, confirm with a single line message."
+  }
+}
