@@ -1,0 +1,13 @@
+{
+  "name": "Flyway Migration Safety Check",
+  "description": "Before any Flyway migration file is written, validate naming and check for destructive operations.",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolName": "write"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A file write is about to occur. If the file path matches `**/db/migration/V*.sql`, perform a safety check: (1) Verify the filename follows Flyway versioning V{major}__{description}.sql, (2) Check if the SQL contains DROP TABLE, DROP COLUMN, or TRUNCATE — if so, warn the user and ask for explicit confirmation, (3) Ensure every new table has `created_at TIMESTAMP DEFAULT NOW()` and `updated_at TIMESTAMP` columns. Report findings and only proceed if safe."
+  }
+}
