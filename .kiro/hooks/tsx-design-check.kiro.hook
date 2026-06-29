@@ -1,0 +1,13 @@
+{
+  "name": "UI Design System Compliance",
+  "description": "After a React component is saved, verify it follows the PayStream design system.",
+  "version": "1",
+  "when": {
+    "type": "fileSave",
+    "patterns": ["frontend/src/**/*.tsx"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A React component was just saved. Review it against the PayStream UI design system (see .kiro/steering/ui-design-system.md). Check for: (1) hardcoded hex colors instead of design tokens, (2) arbitrary spacing values instead of Tailwind scale, (3) missing focus-visible ring on interactive elements, (4) color-only status indicators without text/icon pair. If violations are found, fix them in the file. Log a one-line summary of changes made."
+  }
+}
