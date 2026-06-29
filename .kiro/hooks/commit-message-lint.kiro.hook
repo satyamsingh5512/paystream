@@ -1,0 +1,12 @@
+{
+  "name": "Conventional Commit Enforcer",
+  "description": "When the agent completes a set of file changes, generate a conventional commit message.",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "The agent just finished a task. Review what files were changed in this session. Generate a Conventional Commit message following the format: `<type>(<scope>): <description>` where type is one of feat/fix/chore/docs/refactor/test, scope is the service or module name (e.g., auth-service, frontend, transaction-service), and description is a concise imperative statement. Print the suggested commit message so the developer can copy it. Do not run `git commit` automatically."
+  }
+}
