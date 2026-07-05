@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="transaction-service"/>
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${appName}"}</customFields>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>userId</includeMdcKeyName>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="JSON"/>
+    </root>
+</configuration>
