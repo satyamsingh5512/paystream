@@ -39,7 +39,10 @@ services:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-log:/var/lib/zookeeper/log
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      # cp-zookeeper only enables the 'srvr' four-letter-word command by default ('ruok' is
+      # blocked unless 4lw.commands.whitelist is set, which the image does not translate from
+      # env). 'srvr' returns a status block containing the 'Mode:' line when the node is up.
+      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 | grep -q Mode"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -80,7 +83,11 @@ services:
     container_name: paystream-redis
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      # Host port pinned to 6380 to avoid colliding with a host Redis already on 6379.
+      # Inter-service traffic uses the container network (redis:6379), so this only affects
+      # host access. Not using ${REDIS_HOST_PORT} here on purpose: an ambient shell var of
+      # that name was set to 6379 and kept overriding .env, causing repeated bind conflicts.
+      - "6380:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -394,8 +401,12 @@ services:
     build: { context: ., dockerfile: frontend/Dockerfile }
     image: paystream/frontend:${TAG:-latest}
     container_name: paystream-frontend
+    # nginx resolves all proxy_pass upstream hostnames at startup and aborts if any are not
+    # yet resolvable. Wait for both proxied services to be healthy, and restart as a safety net.
+    restart: unless-stopped
     depends_on:
-      api-gateway: { condition: service_started }
+      api-gateway: { condition: service_healthy }
+      notification-service: { condition: service_healthy }
     ports:
       - "${FRONTEND_PORT:-5173}:80"
     networks: [paystream-net]
